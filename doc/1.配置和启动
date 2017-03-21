@@ -1,0 +1,30 @@
+# 安装
+## 环境要求
+- GNU Make.
+- GCC.
+- Libexpat 1.95 or higher.
+- Libyaml 0.1.4 or higher.
+- Erlang/OTP 17.1 or higher.
+- OpenSSL 1.0.0 or higher, for STARTTLS, SASL and SSL encryption.
+- Zlib 1.2.3 or higher, for Stream Compression support (XEP-0138). Optional.
+- PAM library. Optional. For Pluggable Authentication Modules (PAM).
+- GNU Iconv 1.8 or higher, for the IRC Transport (mod_irc). Optional. Not needed on systems with GNU Libc.
+- ImageMagick's Convert program. Optional. For CAPTCHA challenges.
+
+## 安装过程
+    
+    ./autogen.sh
+    ./configure
+    make
+    sudo make install
+
+文件的几个默认安装路径(可以指定文件安装和加载的位置):  <br/>
+<pre>
+    - /etc/ejabberd : 配置文件  <br/>
+    - /lib/ejabberd ：主要的安装路径，包括编译后的erlang beam,hrl文件和运行时的库文件、web文件等  <br/>
+    - /var/log/ejabber : 日志  <br/>
+    - /sbin/ejabberdctl：管理脚本  <br/>
+    - /var/lib/ejabberd ： 数据文件，主要是mnesia表  <br/>
+    - /share/doc/ejabberd/ : 文档(对运行没有影响)  <br/>
+</pre>
+    
