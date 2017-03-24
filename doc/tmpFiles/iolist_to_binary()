@@ -1,0 +1,11 @@
+iolist_to_binary()
+lists:flatten
+io_lib:format()
+acl:match_rule
+ ejabberd_hooks:run_fold(
+				 roster_get_subscription_lists,
+				 NewState#state.server,
+				 {[], []},
+				 [U, NewState#state.server])
+acl:match_rule(NewStateData#state.server,
+				NewStateData#state.access, JID)

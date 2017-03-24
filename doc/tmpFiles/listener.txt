@@ -1,0 +1,108 @@
+连接和消息传输
+	ejabberd_listener开启监听
+
+		init_tcp(PortIP, Module, Opts, SockOpts, Port, IPS)
+		accept(ListenSocket, Module, Opts)
+		CallMod = case is_frontend(Module) of
+			  true -> ejabberd_frontend_socket;
+			  false -> ejabberd_socket
+		      end,
+	    CallMod:start(strip_frontend(Module), gen_tcp, Socket, Opts),
+	ejabberd_socket为Socket注册进程
+		ejabberd_socket调用Socket:start(Module, SockMod, Socket, Opts)
+		为ejabberd_receiver注册一个关于该socket的进程C2SPID，并将当前socket接收者改为这个进程
+			ejabberd_receiver:start(Socket, SockMod,none,MaxStanzaSize)
+			SockMod:controlling_process(Socket, Receiver)
+		为ejabberd_c2s注册一个socket进程
+			 Module:start({?MODULE, SocketData}, Opts)
+	ejabberd_receiver是一个gen_server,从socket发来的packet通过hand_call来处理
+		发送给c2s？
+	ejabberd_c2s  保存session到sm?
+	ejabberd_sm  路由包给c2s  并对于那些在session_established 之后发送的消息都会交由ejabberd_sm去路由。
+
+
+
+app启动，到连接建立的流程
+	ejabberd_sup:start_link() 
+		ejabberd_listener, start_link []
+		ejabberd_tmp_sup, start_link, [ejabberd_receiver_sup, ejabberd_receiver]
+		ejabberd_tmp_sup, start_link, [ejabberd_c2s_sup, ejabberd_c2s]
+		{ejabberd_tmp_sup, start_link,[ejabberd_s2s_in_sup, ejabberd_s2s_in]
+		{ejabberd_tmp_sup, start_link, [ejabberd_s2s_out_sup, ejabberd_s2s_out]}
+	ejabberd_listener:start_link() 启动一个名为ejabberd_listeners的督程,并通过init()设置子进程规格
+		并依次开启配置文件中设置的端口(gen_tcp:listen),添加到ejabberd_listeners下监控
+			start_listener_sup(Port, Module, Opts) ->
+	    		ChildSpec = {Port,
+				 {?MODULE, start, [Port, Module, Opts]},
+				 transient,
+				 brutal_kill,
+				 worker,
+				 [?MODULE]},
+    supervisor:start_child(ejabberd_listeners, ChildSpec).
+
+    各个child启动调用函数start(Port, Module, Opts),如果socket_type为dependent,
+    则调用本模块的init(PortIP, Module, RawOpts)  --->init_tcp(PortIP, Module, Opts, SockOpts, Port, IPS)
+    开始循环accept tcp 连接 accept(ListenSocket, Module, NewOpts)
+    accept 到一个connection后,调用 ejabberd_listener:start(strip_frontend(Module), gen_tcp, Socket, Opts)
+    在这个函数ejabberd_socket:start(Module, SockMod, Socket, Opts)
+		为ejabberd_receiver注册一个关于该socket的进程RecPID，并将当前socket的controller接收者改为这个进程(即socket数据的接收者)
+			ejabberd_receiver:start(Socket, SockMod,none,MaxStanzaSize)（ejabberd_receiver_sup 作为sup,以gen_server形式初始化receiver模块挂在到督程ejabberd_receiver_sup下）
+			SockMod:controlling_process(Socket, Receiver)
+		为ejabberd_c2s注册一个socket进程
+			 Module:start({?MODULE, SocketData}, Opts)
+		并使其成为RecPid的controller (即receiver将socket的数据解包后发往的进程)
+			ReceiverMod:become_controller(Receiver, Pid)
+
+	接收数据
+    receiver 通过handle_info/handle_call接收到tcp包后，交由ejabberd_receiver:process_data/2  交由xml_stream:parse(XMLStreamState, Data)将二进制数据
+    处理转化为xml格式,再通过XMLStreamState#xml_stream_state_.callback_pid 发送给相应的 c2sPID
+
+    发送数据
+	c2s -> ejabberd_socket:send(SocketData, Data) ->
+
+xml_stream:parse(XMLStreamState, Data)  进行xml解析并将解析结果发给c2s进程
+app启动,建立tls连接流程 ,关闭原port,创建新的port和xmlstream流,然后调用recv_data(TLSSocket, <<"">>)进行加解密的握手过程
+		  TLSSocket = (StateData#state.sockmod):starttls(Socket,
+							 TLSOpts,
+							 BProceed),
+		ejabberd_receiver:handle_call({starttls, TLSSocket}, _From,
+			    #state{xml_stream_state = XMLStreamState,
+				   c2s_pid = C2SPid,
+				   max_stanza_size = MaxStanzaSize} = State) ->
+		    close_stream(XMLStreamState),
+		    NewXMLStreamState = xml_stream:new(C2SPid,
+						       MaxStanzaSize),
+		    NewState = State#state{socket = TLSSocket,
+					   sock_mod = p1_tls,
+					   xml_stream_state = NewXMLStreamState},
+		    case p1_tls:recv_data(TLSSocket, <<"">>) of
+			{ok, TLSData} ->
+			    {reply, ok, process_data(TLSData, NewState), ?HIBERNATE_TIMEOUT};
+			{error, _Reason} ->
+			    {stop, normal, ok, NewState}
+		    end;
+		    p1_tls:starttls , 通过port进行解密然后发送加密的响应  
+		    		new port
+		    	ejabberd_socket:send(SocketData, Data) ->
+					?DEBUG("sockmod sending  packet to user ~p ~p",[SocketData#socket_state.sockmod,SocketData#socket_state.socket]),
+				    case catch (SocketData#socket_state.sockmod):send(
+					     SocketData#socket_state.socket, Data) of
+				        ok -> ok;
+					{error, timeout} ->
+					    ?INFO_MSG("Timeout on ~p:send",[SocketData#socket_state.sockmod]),
+					    exit(normal);
+				        Error ->
+					    ?DEBUG("Error in ~p:send: ~p",[SocketData#socket_state.sockmod, Error]),
+					    exit(normal)
+				    end.
+		
+
+
+
+handle_call({become_controller, C2SPid}, _From, State) ->
+    XMLStreamState = xml_stream:new(C2SPid, State#state.max_stanza_size),
+    NewState = State#state{c2s_pid = C2SPid,
+			   xml_stream_state = XMLStreamState},
+    activate_socket(NewState),
+    Reply = ok,
+    {reply, Reply, NewState, ?HIBERNATE_TIMEOUT};

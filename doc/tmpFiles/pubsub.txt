@@ -1,0 +1,144 @@
+1.收到qq群消息时，调用qqgroupmsg_to_normalize(Content, QQ_Group, QQ_Num, Jid, Msg_Id, Sender) 将消息发给normalize@zgtest/normalize
+
+2.normalize通过一个iq返回解析结果
+
+3.normalize 将解析结果pubsub到该qq群对应的节点,如果没有则创建节点并发布
+
+4.服务器收到创建节点的请求，创建节点，并将该群和节点对应起来
+	mod_pubsub:create_node(Host, ServerHost, Node, From, Type, Access, Config)
+
+5.服务器收到节点发布的消息，publish给所有订阅了该节点的成员
+
+
+
+
+do route 根据请求类型和NS不同 分发给各个函数去处理
+	NS=pubsub时 ,调用 iq_pubsub(Host, ServerHost, From, IQType, SubEl, Lang, Access, Plugins)
+node_hometree_odbc:options().       %% 查询默认配置
+
+
+% 创建节点
+	create_node(Host, ServerHost, Node, From, Type, Access, Config)
+	set_xoptions验证配置文件后，将NodeOptions传出
+	tree_call(Host, create_node, [Host, Node, Type, Owner, NodeOptions, Parents])
+	默认调用nodetree_tree:create_node([Host, Node, Type, Owner, NodeOptions, Parents])
+
+% 发布
+publish_item(Host, ServerHost, Node, From, ItemId, Payload, Access)
+broadcast_stanza(Host, _Node, _NodeId, _Type, NodeOptions, SubsByDepth, NotifyType, BaseStanza, SHIM) ->
+    NotificationType = get_option(NodeOptions, notification_type, headline),
+    BroadcastAll = get_option(NodeOptions, broadcast_all_resources), %% XXX this is not standard, but usefull
+    From = service_jid(Host),
+    Stanza = 
+	    case NotificationType of
+			normal -> BaseStanza;
+			MsgType -> add_message_type(BaseStanza, iolist_to_binary(atom_to_list(MsgType)))
+		end,
+    %% Handles explicit subscriptions
+    SubIDsByJID = subscribed_nodes_by_jid(NotifyType, SubsByDepth),
+    lists:foreach(fun ({LJID, NodeName, SubIDs}) ->
+			  LJIDs = case BroadcastAll of
+				      true ->
+						  {U, S, _} = LJID,
+						  [{U, S, R} || R <- user_resources(U, S)];
+				      false ->
+					  	[LJID]
+				  	end,
+        %% Determine if the stanza should have SHIM ('SubID' and 'name') headers
+	      StanzaToSend = case {SHIM, SubIDs} of
+				                 {false, _} ->
+				                   Stanza;
+				                 %% If there's only one SubID, don't add it
+				                 {true, [_]} ->
+				                   add_shim_headers(Stanza, collection_shim(NodeName));
+				                 {true, SubIDs} ->
+				                   add_shim_headers(Stanza, lists:append(collection_shim(NodeName), subid_shim(SubIDs)))
+		                   end,
+			  lists:foreach(fun(To) ->
+					ejabberd_router:route(From, jlib:make_jid(To), StanzaToSend)
+				end, LJIDs)
+		end, SubIDsByJID).
+
+% 发布选项
+%% @doc <p>Check if a notification must be delivered or not based on node and subscription options.</p>
+	is_to_deliver(LJID, NotifyType, Depth, NodeOptions, SubOptions)  根据node、sub option和其他选项检查是否向该JID发送pub msg
+
+% 订阅
+1. 	subscribe_node(Host, Node, From, JID, Config);
+2.	node_call(Type, subscribe_node, [NodeId, From, Subscriber, AccessModel, SendLast, PresenceSubscription, RosterGroup, SubOpts])
+3. node_hometree:subscribe_node/8
+4. pubsub_subscription:add_subscription(Subscriber, NodeIdx, Options)
+
+
+% 取消订阅
+unsubscribe_node(Host, Node, From, JID, SubId);
+
+
+
+
+
+
+测试packet: ejabberd_router:route(From, To, Packet2). 
+From= {jid,<<"normalize">>,<<"zgtest">>,<<"normalize">>,<<"normalize">>,<<"zgtest">>,<<"normalize">>}.
+To={jid,<<>>,<<"pubsub.zgtest">>,<<>>,<<>>,<<"pubsub.zgtest">>,<<>>}.
+Packet= {xmlel,<<"iq">>,[{<<"xml:lang">>,<<"en">>},{<<"type">>,<<"set">>},{<<"to">>,<<"pubsub.zgtest">>},{<<"from">>,<<"normalize@zgtest/normalize">>}],[{xmlel,<<"pubsub">>,[{<<"xmlns">>,<<"http://jabber.org/protocol/pubsub">>}],[{xmlel,<<"publish">>,[{<<"node">>,<<"normalize">>}],[{xmlel,<<"item">>,[{<<"id">>,<<"isQENpLu5">>}],[{xmlel,<<"content">>,[],[{xmlcdata, <<"this is a test">>}]}]}]}]}]}.
+Data=[{xmlel,<<"data">>,[],[{xmlel,<<"item">>,[],[{xmlel,<<"dm_vcard">>,[],[{xmlel,<<"user_name">>,[],[]},{xmlel,<<"name">>,[],[]},{xmlel,<<"phone_mobile">>,[],[]},{xmlel,<<"inst">>,[],[]},{xmlel,<<"sub_inst">>,[],[]},{xmlel,<<"qq">>,[],[]},{xmlel,<<"memo">>,[],[]}]},{xmlel,<<"content">>,[],[{xmlcdata,<<229,135,186,231,186,191,228,184,138,49,228,186,191>>}]},{xmlel,<<"qq_group">>,[],[{xmlcdata,<<"436718959">>}]},{xmlel,<<"msg_id">>,[],[{xmlcdata,<<"1321972625">>}]},{xmlel,<<"jid">>,[],[{xmlcdata,<<"zgzg@zgtest/PROXY">>}]},{xmlel,<<"rcv_date">>,[],[{xmlcdata,<<"20150424">>}]},{xmlel,<<"rcv_dt">>,[],[{xmlcdata,<<"2015-04-24 12:11:18">>}]},{xmlel,<<"id">>,[],[{xmlcdata,<<"F0qMoABcOxtNkcXZBehRPy">>}]},{xmlel,<<"idx">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"type">>,[],[{xmlcdata,<<"1">>}]},{xmlel,<<"sub_type">>,[],[{xmlcdata,<<"1">>}]},{xmlel,<<"side">>,[],[{xmlcdata,<<"2">>}]},{xmlel,<<"amount">>,[],[{xmlcdata,<<"10000">>}]},{xmlel,<<"rate">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"tenor_low">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"tenor_high">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_bank">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_rural">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_dvp">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_dep_inst">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_rate">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_credit">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_clear_sh">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_clear_cn">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_rating">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_cp">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"appointment">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"prefer_im">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"rmb">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"usd">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"eur">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"hkd">>,[],[{xmlcdata,<<"37176768">>}]},{xmlel,<<"mobile">>,[],[]},{xmlel,<<"phone">>,[],[]}]}]}].
+Packet2={xmlel,<<"iq">>,[{<<"xml:lang">>,<<"en">>},{<<"type">>,<<"set">>},{<<"to">>,<<"pubsub.zgtest">>},{<<"from">>,<<"normalize@zgtest/normalize">>}],[{xmlel,<<"pubsub">>,[{<<"xmlns">>,<<"http://jabber.org/protocol/pubsub">>}],[{xmlel,<<"publish">>,[{<<"node">>,<<"normalize">>}],[{xmlel,<<"item">>,[{<<"id">>,<<"isQENpLu5">>}],Data}]}]}]}.
+Data2=[{xmlel,<<"data">>,[],[{xmlel,<<"item">>,[],[{xmlel,<<"dm_vcard">>,[],[{xmlel,<<"user_name">>,[],[{xmlcdata,<<"user990">>}]},{xmlel,<<"name">>,[],[{xmlcdata,<<"user990">>}]},{xmlel,<<"phone_mobile">>,[],[]},{xmlel,<<"inst">>,[],[]},{xmlel,<<"sub_inst">>,[],[]},{xmlel,<<"qq">>,[],[]},{xmlel,<<"memo">>,[],[]}]},{xmlel,<<"content">>,[],[{xmlcdata,<<229,135,186,231,186,191,228,184,138,49,228,186,191>>}]},{xmlel,<<"qq_group">>,[],[{xmlcdata,<<"436718959">>}]},{xmlel,<<"msg_id">>,[],[{xmlcdata,<<"1321972625">>}]},{xmlel,<<"jid">>,[],[{xmlcdata,<<"zgzg@zgtest/PROXY">>}]},{xmlel,<<"rcv_date">>,[],[{xmlcdata,<<"20150424">>}]},{xmlel,<<"rcv_dt">>,[],[{xmlcdata,<<"2015-04-24 12:11:18">>}]},{xmlel,<<"id">>,[],[{xmlcdata,<<"F0qMoABcOxtNkcXZBehRPy">>}]},{xmlel,<<"idx">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"type">>,[],[{xmlcdata,<<"1">>}]},{xmlel,<<"sub_type">>,[],[{xmlcdata,<<"1">>}]},{xmlel,<<"side">>,[],[{xmlcdata,<<"2">>}]},{xmlel,<<"amount">>,[],[{xmlcdata,<<"10000">>}]},{xmlel,<<"rate">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"tenor_low">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"tenor_high">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_bank">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_rural">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_dvp">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"counter_party_dep_inst">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_rate">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_credit">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_clear_sh">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_clear_cn">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_rating">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"collateral_cp">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"appointment">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"prefer_im">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"rmb">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"usd">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"eur">>,[],[{xmlcdata,<<"0">>}]},{xmlel,<<"hkd">>,[],[{xmlcdata,<<"37176768">>}]},{xmlel,<<"mobile">>,[],[]},{xmlel,<<"phone">>,[],[]}]}]}].
+
+
+
+
+2015-04-23 20:34:04.905 [debug] <0.423.0>@mod_pubsub_odbc:init:275 pubsub init <<"localhost">> [{access_createnode,pubsub_createnode},{ignore_pep_from_offline,true},{last_item_cache,false},{plugins,[<<"flat">>,<<"hometree">>,<<"pep">>]}]
+2015-04-23 20:34:04.906 [debug] <0.423.0>@mod_pubsub_odbc:init_plugins:394 ** tree plugin is nodetree_tree_odbc
+2015-04-23 20:34:04.907 [debug] <0.423.0>@mod_pubsub_odbc:init_plugins:400 ** PEP Mapping : []
+2015-04-23 20:34:04.920 [debug] <0.423.0>@mod_pubsub_odbc:init_plugins:411 ** init flat plugin
+2015-04-23 20:34:04.920 [debug] <0.423.0>@mod_pubsub_odbc:init_plugins:411 ** init hometree plugin
+2015-04-23 20:34:04.921 [debug] <0.423.0>@mod_pubsub_odbc:init_plugins:411 ** init pep plugin
+2015-04-23 20:34:04.921 [debug] <0.269.0> Supervisor ejabberd_sup started mod_pubsub_odbc:start_link(<<"localhost">>, [{access_createnode,pubsub_createnode},{ignore_pep_from_offline,true},{last_item_cache,false},{plugins,...}]) at pid <0.423.0>
+
+
+
+-record(pubsub_node,
+{
+    nodeid               ,%:: {Host::mod_pubsub:host(), NodeId::mod_pubsub:nodeId()},
+    id                   ,%:: mod_pubsub:nodeIdx(),
+    parents = []         ,%:: [Parent_NodeId::mod_pubsub:nodeId()],
+    type    = <<"flat">> ,%:: binary(),
+    owners  = []         ,%:: [Owner::ljid(),...],
+    options = []          %:: mod_pubsub:nodeOptions()
+}).
+
+-record(pubsub_state,
+{
+    stateid                ,%:: {Entity::ljid(), NodeIdx::mod_pubsub:nodeIdx()},
+    items         = []     ,%:: [ItemId::mod_pubsub:itemId()],
+    affiliation   = 'none' ,%:: mod_pubsub:affiliation(),
+    subscriptions = []      %:: [{mod_pubsub:subscription(), mod_pubsub:subId()}]
+}).
+
+-record(pubsub_item,
+{
+    itemid                            ,%:: {mod_pubsub:itemId(), mod_pubsub:nodeIdx()},
+    creation     = {unknown, unknown} ,%:: {erlang:timestamp(), ljid()},
+    modification = {unknown, unknown} ,%:: {erlang:timestamp(), ljid()},
+    payload      = []                  %:: mod_pubsub:payload()
+}).
+
+
+
+%% @doc <p>node tree plugin call.</p>
+tree_call({_User, Server, _Resource}, Function, Args) ->
+    tree_call(Server, Function, Args);
+tree_call(Host, Function, Args) ->
+    ?DEBUG("tree_call ~p ~p ~p", [Host, Function, Args]),
+    Module = case catch
+		    ets:lookup(gen_mod:get_module_proc(Host, config),
+			       nodetree)
+		 of
+	       [{nodetree, N}] -> N;
+	       _ ->
+		   jlib:binary_to_atom(<<(?TREE_PREFIX)/binary,
+					   (?STDTREE)/binary>>)
+	     end,
+    catch apply(Module, Function, Args).

@@ -1,0 +1,137 @@
+0. connect: Accepted connection $ip
+   bind:    Accepted authentication for $username
+0. vcard: dm_vcard_search
+1. get_muc: <<"<iq from='conference.innodealing-dev' to='test8@innodealing-dev/DM'
+2. normalize_search: dm_normalize_search
+3. qq_data: mod_qq process_qq_data
+4. msg_to_normalize:     sending packet to normalize
+5. to_c2s:  sending to process
+6. normalize_result: dm_normalize_result
+7. 
+
+tailf /var/log/ejabberd/ejabberd.log|grep step -C 3
+
+
+2. xml:     Received XML on stream = <<"<iq id=\"145\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>">>
+
+
+tailf /var/log/ejabberd/ejabberd.log |grep 'step[1-4,6]@' -C 3
+
+
+
+
+config:
+	设置日志等级ejabberd_loglevel:set(3).
+	注册用户ejabberd_auth:try_register(<<"normalize">>,<<"centos">>,<<"normalize">>).
+user
+	DM 登录
+	DM QQ 同时登录
+
+user-communicate
+	DM-EJD-DM
+	DM-EJD-QQ Proxy
+	QQ proxy-EJD-QQ&DM
+	QQ Proxy-EJD-DM
+
+user-action
+	上线/下线
+	私人消息
+	群消息
+	发布组
+
+
+question
+	DM登录，--ejabberd-- 注册到Proxy-QQ  QQ帐号、密码位于客户端还是服务器段
+	QQ发消息给用户-proxy接收--ejabberd--
+
+
+register
+	Server必须在配置文件的myhost列表里。(ejabberd_config:get_myhosts(). -> [<<"localhost">>])
+	 ejabberd_auth:try_register(<<"normalize">>,<<"centos">>,<<"normalize">>).
+
+
+module
+ejabberd_router
+ejabberd_hooks
+ejabberd_c2s
+gen_mod
+ejabberd_app
+
+function
+c2s_filter_packet_in  处理发送给dm用户的消息
+c2s_filter_packet_out 处理dm用户发出的消息
+process_sm_iq(From, To, #iq{id = ID, sub_el = SubEl} = IQ)  接收proxy消息
+
+
+ejabberd_auth:is_user_exists(?ADMINISTRATOR, Host)
+Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
+gen_mod:db_type(Opts)
+	   
+	   ejabberd_sm模块启动时创建sm_iqtable表,ets:new(sm_iqtable, [named_table]),
+	   其他模块启动时通过调用
+	   		mod_qq   gen_iq_handler:add_iq_handler(ejabberd_sm, Host,?NS_QQ_PROXY, ?MODULE, process_sm_iq, no_queue)
+	   		|
+	   		gen_iq_handler   Component:register_iq_handler(Host, NS, Module,	Function, no_queue)
+	   		|
+	   		ejabberd_sm handle_info({register_iq_handler, Host, XMLNS, Module, Function}, State) 
+	   	通过 ets:insert(sm_iqtable, {{XMLNS, Host}, Module, Function})把{XMLNS,HOST}和模块函数的对应关系保存起来
+
+
+
+ejabberd_hooks:add(c2s_filter_packet_in, Host, ?MODULE, c2s_filter_packet_in, 75), 
+	add(Hook, Host, Module, Function, Seq) ->
+    	gen_server:call(ejabberd_hooks, {add, Hook, Host, Module, Function, Seq}).
+    通过ets:insert(hooks, {{Hook, Host}, NewLs})将{Hook,Host}和{Seq, Node, Module, Function}的列表保存到hooks ets中
+
+
+
+连接和消息传输
+	ejabberd_listener开启监听
+		init_tcp(PortIP, Module, Opts, SockOpts, Port, IPS)
+		accept(ListenSocket, Module, Opts)
+		CallMod = case is_frontend(Module) of
+			  true -> ejabberd_frontend_socket;
+			  false -> ejabberd_socket
+		      end,
+	    CallMod:start(strip_frontend(Module), gen_tcp, Socket, Opts),
+	ejabberd_socket为Socket注册进程
+		ejabberd_socket调用Socket:start(Module, SockMod, Socket, Opts)
+		为ejabberd_receiver注册一个关于该socket的进程C2SPID，并将当前socket接收者改为这个进程
+			ejabberd_receiver:start(Socket, SockMod,none,MaxStanzaSize)
+			SockMod:controlling_process(Socket, Receiver)
+		为ejabberd_c2s注册一个socket进程
+			 Module:start({?MODULE, SocketData}, Opts)
+	ejabberd_receiver是一个gen_server,从socket发来的packet通过hand_call来处理
+		发送给c2s？
+	ejabberd_c2s  保存session到sm?
+	ejabberd_sm  路由包给c2s  并对于那些在session_established 之后发送的消息都会交由ejabberd_sm去路由。
+
+	session_established后，用户发送消息到服务器会调用ejabberd_hooks:run(user_send_packet...将消息记录到日志，然后调用
+		check_privacy_route进行校验，最后将包路由出去ejabberd_router:route(FromRoute,To,Packet)
+		ejabberd_router路由消息 do_route/3
+			ejabberd_hooks:run_fold(filter_packet,  
+			先用包过滤模块进行过滤，通过后在路由表中查找路由到的模块的Pid：
+			case mnesia:dirty_read(route, LDstDomain) of  
+			注：此处会以LDstDomain = To#jid.lserver, 去router表查找是交由本地处理，还是交由其他server 处理。
+			如果LDstDomain是本地，则会将Packet发送给相应的函数或进程
+				if node(Pid) == node() ->
+		       		case R#route.local_hint of
+			 			{apply, Module, Function} ->
+			    	 		Module:Function(From, To, Packet);
+			 			_ -> 
+			 				Pid ! {route, From, To, Packet}
+		       		end;
+		    该函数处理后，将Packet发送给ejabberd_sm:route(From, To, Packet)
+		    也就是说对于那些在session_established 之后发送的消息都会交由ejabberd_sm去路由
+		    	ejabberd_sm调用process_iq(From, To, Packet)将包发给之前保存在sm_iqtable中的功能模块去处理
+
+
+
+
+核心服务
+	1.auth
+	2.通过iq discover info和items来发现server的服务项目，包括conference和pubsub
+
+
+
+
